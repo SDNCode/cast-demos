@@ -1,0 +1,242 @@
+{
+  "$schema": "http://schema.management.azure.com/schemas/2015-01-01/deploymentTemplate.json#",
+  "contentVersion": "1.0.0.0",
+  "parameters": {
+    "logicAppName": {
+      "type": "string",
+      "minLength": 1
+    },
+    "svcPlanName": {
+      "type": "string",
+      "minLength": 1
+    },
+    "skuName": {
+      "type": "string",
+      "defaultValue": "F1",
+      "allowedValues": [
+        "F1",
+        "D1",
+        "B1",
+        "B2",
+        "B3",
+        "S1",
+        "S2",
+        "S3",
+        "P1",
+        "P2",
+        "P3",
+        "P4"
+      ],
+      "metadata": {
+        "description": "Describes plan's pricing tier and instance size. Check details at https://azure.microsoft.com/en-us/pricing/details/app-service/"
+      }
+    },
+    "skuCapacity": {
+      "type": "int",
+      "defaultValue": 1,
+      "minValue": 1,
+      "metadata": {
+        "description": "Describes plan's instance count"
+      }
+    },
+    "workflowSkuName": {
+      "type": "string",
+      "defaultValue": "Free",
+      "allowedValues": [
+        "Free",
+        "Basic",
+        "Standard",
+        "Premium"
+      ]
+    },
+    "testUri": {
+      "type": "string",
+      "minLength": 1,
+      "defaultValue": "https://azure.microsoft.com/en-us/status/feed/"
+    }
+  },
+  "resources": [
+    {
+      "apiVersion": "2015-08-01",
+      "name": "[parameters('svcPlanName')]",
+      "type": "Microsoft.Web/serverfarms",
+      "location": "[resourceGroup().location]",
+      "tags": {
+        "displayName": "AppServicePlan"
+      },
+      "sku": {
+        "name": "[parameters('skuName')]",
+        "capacity": "[parameters('skuCapacity')]"
+      },
+      "properties": {
+        "name": "[parameters('svcPlanName')]"
+      }
+    },
+    {
+      "type": "Microsoft.Logic/workflows",
+      "apiVersion": "2015-02-01-preview",
+      "name": "[parameters('logicAppName')]",
+      "location": "[resourceGroup().location]",
+      "tags": {
+        "displayName": "LogicApp"
+      },
+      "properties": {
+        "sku": {
+          "name": "[parameters('workflowSkuName')]",
+          "plan": {
+            "id": "[concat(resourceGroup().id, '/providers/Microsoft.Web/serverfarms/', parameters('svcPlanName'))]"
+          }
+        },
+        "definition": {
+          "$schema": "https://schema.management.azure.com/providers/Microsoft.Logic/schemas/2015-08-01-preview/workflowdefinition.json#",
+          "actions": {
+            "When_a_new_tweet_appears": {
+              "type": "apiconnection",
+              "inputs": {
+                "host": {
+                  "api": {
+                    "runtimeUrl": "https://logic-apis-westeurope.azure-apim.net/apim/twitter"
+                  },
+                  "connection": {
+                    "name": "@parameters('$connections')['twitter']['connectionId']"
+                  }
+                },
+                "method": "get",
+                "queries": {
+                  "searchQuery": "Azure"
+                },
+                "path": "/onnewtweet"
+              },
+              "conditions": []
+            },
+            "Create_file": {
+              "type": "apiconnection",
+              "inputs": {
+                "host": {
+                  "api": {
+                    "runtimeUrl": "https://logic-apis-westeurope.azure-apim.net/apim/dropbox"
+                  },
+                  "connection": {
+                    "name": "@parameters('$connections')['dropbox']['connectionId']"
+                  }
+                },
+                "method": "post",
+                "queries": {
+                  "folderPath": "/tweets",
+                  "name": "@{item()?['TweetId']}.txt"
+                },
+                "body": "@item()['TweetText']",
+                "path": "/datasets/default/files"
+              },
+              "foreach": "@body('When_a_new_tweet_appears')['value']",
+              "conditions": [
+                {
+                  "dependsOn": "When_a_new_tweet_appears"
+                }
+              ]
+            },
+            "Translate_text": {
+              "type": "apiconnection",
+              "inputs": {
+                "host": {
+                  "api": {
+                    "runtimeUrl": "https://logic-apis-westeurope.azure-apim.net/apim/microsofttranslator"
+                  },
+                  "connection": {
+                    "name": "@parameters('$connections')['microsofttranslator']['connectionId']"
+                  }
+                },
+                "method": "get",
+                "queries": {
+                  "query": "@{item()['TweetText']}",
+                  "languageTo": "af"
+                },
+                "path": "/Translate"
+              },
+              "foreach": "@body('When_a_new_tweet_appears')['value']",
+              "conditions": [
+                {
+                  "dependsOn": "Create_file"
+                }
+              ]
+            },
+            "Send_email": {
+              "type": "apiconnection",
+              "inputs": {
+                "host": {
+                  "api": {
+                    "runtimeUrl": "https://logic-apis-westeurope.azure-apim.net/apim/office365"
+                  },
+                  "connection": {
+                    "name": "@parameters('$connections')['office365']['connectionId']"
+                  }
+                },
+                "method": "post",
+                "body": {
+                  "To": "fanie@reynders.co",
+                  "Subject": "New translation",
+                  "Body": "@{item()}"
+                },
+                "path": "/Mail"
+              },
+              "foreach": "@body('Translate_text')",
+              "conditions": [
+                {
+                  "dependsOn": "Translate_text"
+                }
+              ]
+            }
+          },
+          "parameters": {
+            "$connections": {
+              "defaultValue": {},
+              "type": "Object"
+            },
+            "testURI": {
+              "type": "string",
+              "defaultValue": "[parameters('testUri')]"
+            }
+          },
+          "triggers": {
+            "recurrence": {
+              "type": "Recurrence",
+              "recurrence": {
+                "frequency": "Hour",
+                "interval": 1
+              }
+            }
+          },
+          "contentVersion": "1.0.0.0",
+          "outputs": {}
+        },
+        "parameters": {
+          "$connections": {
+            "value": {
+              "twitter": {
+                "id": "/subscriptions/e916e697-db63-4634-ac55-f4b28d9ef4e8/providers/Microsoft.Web/locations/westeurope/managedApis/twitter",
+                "connectionId": "/subscriptions/e916e697-db63-4634-ac55-f4b28d9ef4e8/resourceGroups/Sandbox/providers/Microsoft.Web/connections/twitter",
+                "connectionName": "twitter"
+              },
+              "dropbox": {
+                "id": "/subscriptions/e916e697-db63-4634-ac55-f4b28d9ef4e8/providers/Microsoft.Web/locations/westeurope/managedApis/dropbox",
+                "connectionId": "/subscriptions/e916e697-db63-4634-ac55-f4b28d9ef4e8/resourceGroups/Sandbox/providers/Microsoft.Web/connections/dropbox",
+                "connectionName": "dropbox"
+              },
+              "microsofttranslator": {
+                "id": "/subscriptions/e916e697-db63-4634-ac55-f4b28d9ef4e8/providers/Microsoft.Web/locations/westeurope/managedApis/microsofttranslator",
+                "connectionId": "/subscriptions/e916e697-db63-4634-ac55-f4b28d9ef4e8/resourceGroups/Sandbox/providers/Microsoft.Web/connections/microsofttranslator",
+                "connectionName": "microsofttranslator"
+              },
+              "office365": {
+                "id": "/subscriptions/e916e697-db63-4634-ac55-f4b28d9ef4e8/providers/Microsoft.Web/locations/westeurope/managedApis/office365",
+                "connectionId": "/subscriptions/e916e697-db63-4634-ac55-f4b28d9ef4e8/resourceGroups/Sandbox/providers/Microsoft.Web/connections/office365",
+                "connectionName": "office365"
+              }
+            }
+          }
+        }
+      }
+    }
+  ],
+  "outputs": {}
+}
